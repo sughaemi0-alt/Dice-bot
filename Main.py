@@ -250,6 +250,16 @@ async def 리셋(ctx):
     consecutive_wins = 0
     last_main_color = None
     await ctx.send("🧹 모든 데이터가 초기화되었습니다.")
+    # 허용할 내 디스코드 서버 ID (숫자)
+ALLOWED_SERVER_ID = 1547517175236137050  # 본인 서버 ID 숫자로 변경
+
+@bot.event
+async def on_guild_join(guild):
+    # 허가되지 않은 서버에 봇이 들어갈 경우 자동으로 서버 나가기
+    if guild.id != ALLOWED_SERVER_ID:
+        await guild.leave()
+        print(f"🚫 허가되지 않은 서버({guild.name}) 접속 차단 및 자동 탈퇴 완료.")
+
 
 keep_alive()
 bot.run(os.environ.get('TOKEN')) 
