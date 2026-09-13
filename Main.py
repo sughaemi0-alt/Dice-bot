@@ -21,7 +21,7 @@ def keep_alive():
 
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents). 
 
 COLOR_MAP = {
     "파": "파랑", "보": "보라", "초": "초록",
