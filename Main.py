@@ -10,6 +10,7 @@ app = Flask('')
 
 @app.route('/')
 def home():
+    
     return "Online-Dice Analytics Engine is Live!"                  
 
 def run():
