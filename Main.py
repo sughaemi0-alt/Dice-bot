@@ -9,8 +9,7 @@ from threading import Thread
 app = Flask('')
 
 @app.route('/')
-def home():
-    
+def home(): 
     return "Online-Dice Analytics Engine is Live!"                  
 
 def run():
