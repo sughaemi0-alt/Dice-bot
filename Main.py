@@ -1,16 +1,18 @@
 import os
-import random
-import discord
-from discord.ext import commands     
-from collections import Counter
-from flask import Flask                   
+import asyncio
+from flask import Flask
 from threading import Thread
+import discord
+from discord.ext import commands
 
+# -------------------------------------------------------------
+# 1. Render 웹서버 및 UptimeRobot 24시간 유지 설정 (Flask)
+# -------------------------------------------------------------
 app = Flask('')
 
 @app.route('/')
-def home(): 
-    return "Online-Dice Analytics Engine is Live!"                  
+def home():
+    return "Bot is alive!"
 
 def run():
     app.run(host='0.0.0.0', port=8080)
@@ -19,247 +21,167 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
 
+# -------------------------------------------------------------
+# 2. 디스코드 봇 설정 & 전용 서버 제한 설정
+# -------------------------------------------------------------
+ALLOWED_SERVER_ID = 1476547550885711894
+
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents). 
 
-COLOR_MAP = {
-    "파": "파랑", "보": "보라", "초": "초록",
-    "주": "주황", "빨": "빨강", "노": "노랑",  
-    "파랑": "파랑", "보라": "보라", "초록": "초록",
-    "주황": "주황", "빨강": "빨강", "노랑": "노랑"
-}
-COLORS = ["파랑", "보라", "초록", "주황", "빨강", "노랑"]
+bot = commands.Bot(command_prefix='!', intents=intents)
 
-# 각 색상별 대표 이모지 지정
-COLOR_EMOJI = {
-    "파랑": "🟦",
-    "보라": "🟪",
-    "초록": "🟩",
-    "주황": "🟧",
-    "빨강": "🟥",
-    "노랑": "🟨"
-}
-
-history_rolls = [] 
-last_main_color = None
-prediction_history = [] 
+history_rolls = []
+prediction_history = []
 consecutive_losses = 0
 consecutive_wins = 0
-
-def parse_colors(inputs):
-    result = []
-    for c in inputs:
-        if c in COLOR_MAP:
-            result.append(COLOR_MAP[c])
-        else:
-            return None
-    return result
-
-def get_reroll_recommendation(exclude_color):
-    candidates = [c for c in COLORS if c != exclude_color]
-    sim_counts = Counter()
-    for _ in range(30000):
-        roll = random.choices(COLORS, k=4)
-        for c in candidates:
-            if roll.count(c) in [1, 4]:
-                sim_counts[c] += 1
-    return sim_counts.most_common(1)[0][0]
+last_main_color = None
 
 @bot.event
 async def on_ready():
-    print(f"✅ 다이스 데이터 분석 엔진 정상 작동: {bot.user.name}")
+    print(f'✅ 로그인 완료: {bot.user.name} (ID: {bot.user.id})')
+    for guild in bot.guilds:
+        if guild.id != ALLOWED_SERVER_ID:
+            print(f"🚫 허가되지 않은 서버({guild.name}) 감지 -> 탈퇴 처리")
+            await guild.leave()
 
-# 1. 단순 실제 결과 기록 (예측 과정 없이 데이터만 누적)
-@bot.command()
-async def 입력(ctx, c1: str, c2: str, c3: str, c4: str):
-    parsed = parse_colors([c1, c2, c3, c4])
-    if not parsed:
-        await ctx.send("❌ 올바른 색상을 입력해주세요! (`파, 보, 초, 주, 빨, 노`)")
-        return
+@bot.event
+async def on_guild_join(guild):
+    if guild.id != ALLOWED_SERVER_ID:
+        print(f"🚫 허가되지 않은 서버({guild.name}) 접속 차단 및 탈퇴.")
+        await guild.leave()
 
-    history_rolls.append(parsed)
-    short_view = " ".join([c[0] for c in parsed])
-    await ctx.send(f"📥 **데이터 추가 완료!** ({len(history_rolls)}회차: `{short_view}`)")
+# -------------------------------------------------------------
+# 3. 분석 및 자동 예측 알림 로직
+# -------------------------------------------------------------
+def parse_colors(colors_list):
+    color_map = {
+        '초': '초록', '파': '파랑', '노': '노랑', '보': '보라', '주': '주황', '빨': '빨강',
+        '초록': '초록', '파랑': '파랑', '노랑': '노랑', '보라': '보라', '주황': '주황', '빨강': '빨강'
+    }
+    parsed = []
+    for c in colors_list:
+        clean_c = c.strip()
+        if clean_c in color_map:
+            parsed.append(color_map[clean_c])
+    return parsed
 
-# 2. 누적된 기록 및 색상 그래프 조회
-@bot.command()
-async def 기록(ctx):
+# 공통 예측 리포트 생성 함수
+async def generate_prediction_report(ctx, is_auto=False):
+    global history_rolls, last_main_color, consecutive_losses, consecutive_wins
+    
     if not history_rolls:
-        await ctx.send("📊 현재 기록된 데이터가 없습니다. `!입력 파 보 초 주`로 데이터를 적재해 주세요.")
+        if not is_auto:
+            await ctx.send("⚠️ 과거 데이터가 없습니다. 먼저 `!입력`으로 데이터를 쌓아주세요.")
         return
 
-    embed = discord.Embed(title=f"📜 누적 데이터 분석 리포트 (총 {len(history_rolls)}회차)", color=0x3498db)
+    color_counts = {}
+    for roll in history_rolls:
+        for color in roll:
+            color_counts[color] = color_counts.get(color, 0) + 1
+
+    sorted_colors = sorted(color_counts.items(), key=lambda x: x[1], reverse=True)
+    best_color = sorted_colors[0][0] if sorted_colors else "초록"
+    best_count = sorted_colors[0][1] if sorted_colors else 0
+    second_count = sorted_colors[1][1] if len(sorted_colors) > 1 else 0
     
-    # 최근 10회차 목록
-    recent_text = ""
-    start_idx = max(0, len(history_rolls) - 10)
-    for idx, roll in enumerate(history_rolls[start_idx:], start=start_idx + 1):
-        short_view = " ".join([c[0] for c in roll])
-        recent_text += f"**{idx}회차**: `{short_view}`\n"
-    
-    embed.add_field(name="📋 최근 회차 기록 (최대 10개)", value=recent_text, inline=False)
-
-    # 색상별 출현 빈도 및 그래프 분석
-    all_colors = [color for roll in history_rolls for color in roll]
-    counts = Counter(all_colors)
-    total_dice = len(all_colors)
-    
-    graph_text = ""
-    for c in COLORS:
-        c_count = counts.get(c, 0)
-        ratio = (c_count / total_dice * 100) if total_dice > 0 else 0
-        
-        # 10%당 1칸씩 이모지 그래프 생성 (최대 10칸)
-        bar_count = int(round(ratio / 10))
-        emoji_bar = COLOR_EMOJI[c] * bar_count
-        
-        graph_text += f"**{c}** ({c_count}회 | {ratio:.1f}%)\n{emoji_bar if emoji_bar else '▫️'}\n\n"
-        
-    embed.add_field(name="📊 색상별 출현 비중 그래프", value=graph_text, inline=False)
-    await ctx.send(embed=embed)
-
-# 3. 누적 데이터를 바탕으로 패턴 분석 및 다음 색상 예측
-@bot.command()
-async def 예측(ctx):
-    global last_main_color
-
-    cluster_color = None
-    if len(history_rolls) > 0:
-        last_roll = history_rolls[-1]
-        counts = Counter(last_roll)
-        for c, count in counts.items():
-            if count >= 3:
-                cluster_color = c
-                break
-
-    recent_counts = Counter()
-    if len(history_rolls) > 0:
-        recent_rolls = history_rolls[-5:]
-        for r in recent_rolls:
-            for c in r:
-                recent_counts[c] += 1
-
-    sim_counts = Counter()
-    for _ in range(50000):
-        roll = random.choices(COLORS, k=4)
-        for c in COLORS:
-            if roll.count(c) in [1, 4]:
-                bonus = recent_counts.get(c, 0) * 0.05
-                sim_counts[c] += (1 + bonus)
-
-    if cluster_color:
-        sim_counts[cluster_color] *= 1.2
-
-    best_color = sim_counts.most_common(1)[0][0]
     last_main_color = best_color
+    total_valid = consecutive_wins + consecutive_losses
+    win_rate = (consecutive_wins / total_valid * 100) if total_valid > 0 else 0.0
 
-    valid_preds = [p for p in prediction_history if p['main'] in ['WIN', 'LOSS']]
-    main_wins = sum(1 for p in valid_preds if p['main'] == 'WIN')
-    total_valid = len(valid_preds)
-    win_rate = (main_wins / total_valid * 100) if total_valid > 0 else 0.0
+    # 확신도 및 자동 발송 조건 판단
+    gap = best_count - second_count
+    is_strong_timing = (gap >= 3 or consecutive_wins >= 2) and (consecutive_losses < 2)
 
-    embed = discord.Embed(
-        title="🎯 online-dice 단일 분석 예측 리포트", 
-        color=0x2ecc71 if consecutive_losses < 2 else 0xe74c3c
-    )
-
-    embed.add_field(name="📦 분석에 반영된 과거 데이터", value=f"총 **{len(history_rolls)}개**의 회차 데이터 분석 완료", inline=False)
-
-    if cluster_color:
-        embed.add_field(name="⚡ 쏠림 패턴 감지", value=f"⚠️ 직전 회차에 **`{cluster_color}`** 색상이 3개 이상 감지되었습니다.", inline=False)
-
-    embed.add_field(name="🎯 핵심 추천 색상 (1개)", value=f"👉 **`{best_color}` ({best_color[0]})**", inline=False)
+    # 자동 발송 시에는 '확신 타이밍'일 때만 메시지 전송
+    if is_auto and not is_strong_timing:
+        return
 
     if consecutive_losses >= 2:
-        embed.add_field(name="🚨 리스크 경고 (관망)", value="🛑 **연속 오답 구간입니다. 이번 회차는 배팅을 패스하세요!**", inline=False)
+        confidence = "🛑 관망 권장 (위험)"
+        guide_msg = "🚨 연속 오답 구간입니다! 이번 회차는 배팅하지 말고 패스하세요."
+        embed_color = 0xe74c3c
+    elif is_strong_timing:
+        confidence = "🔥 무조건 추천 (확신 타이밍!)"
+        guide_msg = f"⚡ **[ {best_color} ]** 색상의 조건이 완벽히 갖춰졌습니다! 이번 타이밍에 들어가세요!"
+        embed_color = 0x2ecc71
+    else:
+        confidence = "🟢 일반 참고"
+        guide_msg = f"👍 현재 추천 색상은 **[ {best_color} ]** 입니다."
+        embed_color = 0x3498db
 
-    status_text = (
-        f"• 유효 적중률: **{win_rate:.1f}%** ({main_wins}/{total_valid}회 승리)\n"
-        f"• 연속 상태: **{consecutive_wins}회 성공** / **{consecutive_losses}회 실패**"
-    )
-
-    embed.add_field(name="📊 분석 상태", value=status_text, inline=False)
+    title_prefix = "🚨 [자동 감지] " if is_auto else ""
+    embed = discord.Embed(title=f"🎯 {title_prefix}online-dice 단일 분석 예측 리포트", color=embed_color)
+    embed.add_field(name="📦 분석 회차", value=f"총 **{len(history_rolls)}**회차 데이터 반영", inline=True)
+    embed.add_field(name="📊 분석 상태", value=f"적중률 **{win_rate:.1f}%** ({consecutive_wins}승/{consecutive_losses}패)", inline=True)
+    
+    embed.add_field(name="🎯 추천 색상", value=f"👉 `{best_color}`", inline=False)
+    embed.add_field(name="🔥 봇의 확신도", value=f"**{confidence}**", inline=False)
+    embed.add_field(name="💡 베팅 가이드", value=guide_msg, inline=False)
+    
     await ctx.send(embed=embed)
 
-# 4. 예측된 추천 색상과 실제 결과를 비교 및 승/패 판정
+@bot.command()
+async def 입력(ctx, c1: str, c2: str, c3: str, c4: str):
+    global history_rolls
+    parsed = parse_colors([c1, c2, c3, c4])
+    if len(parsed) != 4:
+        await ctx.send("⚠️ 색상 4개를 정확히 입력해 주세요. (예: `!입력 초 파 노 보`)")
+        return
+    
+    history_rolls.append(parsed)
+    await ctx.send(f"📊 데이터 추가 완료! ({len(history_rolls)}회차: {' '.join(parsed)})")
+    
+    # 💡 데이터 입력 시 자동으로 타이밍 감지 후 메시지 출력
+    await generate_prediction_report(ctx, is_auto=True)
+
+@bot.command()
+async def 예측(ctx):
+    await generate_prediction_report(ctx, is_auto=False)
+
 @bot.command()
 async def 실제(ctx, c1: str, c2: str, c3: str, c4: str):
     global last_main_color, consecutive_losses, consecutive_wins
     if not last_main_color:
-        await ctx.send("⚠️ 먼저 `!예측`을 실행해 주세요.")
+        await ctx.send("⚠️ 먼저 `!예측` 또는 자동 예측 알림을 확인해 주세요.")
         return
 
     parsed = parse_colors([c1, c2, c3, c4])
-    if not parsed:
-        await ctx.send("❌ 올바른 색상을 입력해주세요! (`파, 보, 초, 주, 빨, 노`)")
+    if len(parsed) != 4:
+        await ctx.send("⚠️ 결과 색상 4개를 입력해 주세요.")
         return
 
-    cnt_main = parsed.count(last_main_color)
-
-    if cnt_main in [1, 4]:
-        main_status = 'WIN'
-    elif cnt_main in [2, 3]:
-        main_status = 'REROLL'
-    else:
-        main_status = 'LOSS'
-
-    prediction_history.append({'main': main_status})
-
-    embed = discord.Embed(title="🎲 결과 판정", color=0x3498db)
-
-    if main_status == 'WIN':
+    history_rolls.append(parsed)
+    
+    if last_main_color in parsed:
         consecutive_wins += 1
         consecutive_losses = 0
-        embed.description = f"🎉 **적중 성공!** 추천 색상(`{last_main_color}`)이 **{cnt_main}개** 나왔습니다."
-        embed.color = 0x2ecc71
-    elif main_status == 'REROLL':
-        reroll_target = get_reroll_recommendation(last_main_color)
-        embed.description = (
-            f"🔄 **리롤 발생!** 추천 색상(`{last_main_color}`)이 **{cnt_main}개** 나왔습니다.\n\n"
-            f"🎯 **[리롤 추천]**: **`{reroll_target}` ({reroll_target[0]})**"
-        )
-        embed.color = 0xf1c40f
+        embed = discord.Embed(title="🎉 예측 성공!", description=f"추천 색상 `{last_main_color}`이(가) 출현했습니다.", color=0x2ecc71)
     else:
         consecutive_losses += 1
         consecutive_wins = 0
-        advice = "🛑 **연속 실패! 다음 회차는 배팅을 패스하세요.**" if consecutive_losses >= 2 else "⚠️ 실패했습니다."
-        embed.description = f"❌ **적중 실패 (0개)**: 추천 색상(`{last_main_color}`) 미출현\n\n{advice}"
-        embed.color = 0xe74c3c
+        advice = "🛑 연속 오답! 다음 회차는 패스하세요." if consecutive_losses >= 2 else "⚠️ 실패했습니다."
+        embed = discord.Embed(title="❌ 예측 실패", description=f"추천 색상 `{last_main_color}` 미출현\n\n{advice}", color=0xe74c3c)
 
     await ctx.send(embed=embed)
 
-    history_rolls.append(parsed)
-    last_main_color = None
-
 @bot.command()
 async def 삭제(ctx):
+    global history_rolls
     if not history_rolls:
         await ctx.send("⚠️ 삭제할 기록이 없습니다.")
         return
     removed = history_rolls.pop()
-    short_view = " ".join([c[0] for c in removed])
-    await ctx.send(f"🗑️ **직전 기록 삭제 완료.** (`{short_view}`)")
+    await ctx.send(f"🗑️ 직전 기록 삭제 완료. ({' '.join(removed)})")
 
 @bot.command()
 async def 리셋(ctx):
-    global history_rolls, prediction_history, consecutive_losses, consecutive_wins, last_main_color
+    global history_rolls, consecutive_losses, consecutive_wins, last_main_color
     history_rolls = []
-    prediction_history = []
     consecutive_losses = 0
     consecutive_wins = 0
     last_main_color = None
     await ctx.send("🧹 모든 데이터가 초기화되었습니다.")
-    # 허용할 내 디스코드 서버 ID (숫자)
-ALLOWED_SERVER_ID = 1547517175236137050  # 본인 서버 ID 숫자로 변경
-
-@bot.event
-async def on_guild_join(guild):
-    # 허가되지 않은 서버에 봇이 들어갈 경우 자동으로 서버 나가기
-    if guild.id != ALLOWED_SERVER_ID:
-        await guild.leave()
-        print(f"🚫 허가되지 않은 서버({guild.name}) 접속 차단 및 자동 탈퇴 완료.")
-
 
 keep_alive()
-bot.run(os.environ.get('TOKEN')) 
+bot.run(os.environ.get('TOKEN'))
