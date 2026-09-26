@@ -31,11 +31,13 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
+# 전역 변수
 history_rolls = []
 prediction_history = []
 consecutive_losses = 0
 consecutive_wins = 0
 last_main_color = None
+is_maintenance_mode = False  # 점검 모드 상태 플래그
 
 @bot.event
 async def on_ready():
@@ -51,8 +53,45 @@ async def on_guild_join(guild):
         print(f"🚫 허가되지 않은 서버({guild.name}) 접속 차단 및 탈퇴.")
         await guild.leave()
 
+# 점검 모드 전역 확인 (명령어 실행 전 차단)
+@bot.before_invoke
+async def check_maintenance(ctx):
+    # start / stop 명령어 자체는 점검 중에도 실행 가능해야 함
+    if ctx.command.name in ['start', 'stop']:
+        return
+    
+    if is_maintenance_mode:
+        await ctx.send("🛠️ **Bot usage is temporarily suspended for system maintenance.**")
+        raise commands.CommandError("Maintenance mode enabled.")
+
 # -------------------------------------------------------------
-# 3. 분석 및 자동 예측 알림 로직
+# 3. 관리자 전용 점검 명령어 (start / stop)
+# -------------------------------------------------------------
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def stop(ctx):
+    global is_maintenance_mode
+    is_maintenance_mode = True
+    await bot.change_presence(status=discord.Status.dnd, activity=discord.Game(name="🛠️ Maintenance Mode"))
+    await ctx.send("🚨 **Bot usage is temporarily suspended for system maintenance.**")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def start(ctx):
+    global is_maintenance_mode
+    is_maintenance_mode = False
+    await bot.change_presence(status=discord.Status.online, activity=discord.Game(name="🎲 다이스 분석 중"))
+    await ctx.send("✅ **The bot is back to normal operation and ready to process commands.**")
+
+# 권한 에러 처리 (관리자가 아닌 사람이 실행할 경우)
+@start.error
+@stop.error
+async def admin_command_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("⚠️ You do not have administrator permissions to use this command.")
+
+# -------------------------------------------------------------
+# 4. 분석 및 자동 예측 알림 로직
 # -------------------------------------------------------------
 def parse_colors(colors_list):
     color_map = {
@@ -66,7 +105,6 @@ def parse_colors(colors_list):
             parsed.append(color_map[clean_c])
     return parsed
 
-# 공통 예측 리포트 생성 함수
 async def generate_prediction_report(ctx, is_auto=False):
     global history_rolls, last_main_color, consecutive_losses, consecutive_wins
     
@@ -89,11 +127,9 @@ async def generate_prediction_report(ctx, is_auto=False):
     total_valid = consecutive_wins + consecutive_losses
     win_rate = (consecutive_wins / total_valid * 100) if total_valid > 0 else 0.0
 
-    # 확신도 및 자동 발송 조건 판단
     gap = best_count - second_count
     is_strong_timing = (gap >= 3 or consecutive_wins >= 2) and (consecutive_losses < 2)
 
-    # 자동 발송 시에는 '확신 타이밍'일 때만 메시지 전송
     if is_auto and not is_strong_timing:
         return
 
@@ -132,7 +168,6 @@ async def 입력(ctx, c1: str, c2: str, c3: str, c4: str):
     history_rolls.append(parsed)
     await ctx.send(f"📊 데이터 추가 완료! ({len(history_rolls)}회차: {' '.join(parsed)})")
     
-    # 💡 데이터 입력 시 자동으로 타이밍 감지 후 메시지 출력
     await generate_prediction_report(ctx, is_auto=True)
 
 @bot.command()
